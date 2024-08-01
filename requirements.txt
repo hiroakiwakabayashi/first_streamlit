@@ -1,4 +1,4 @@
-cmake
+cmake-language-server==0.1.2
 numpy==1.26.4
 opencv-python
 Pillow<10
