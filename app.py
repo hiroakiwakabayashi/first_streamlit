@@ -1,84 +1,160 @@
 import streamlit as st
-import face_recognition
 import cv2
+import face_recognition
 import numpy as np
-from PIL import Image
-import io
+from PIL import Image, ImageDraw, ImageFont
+import os
+import re
 
-def preprocess_image(image):
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    image = cv2.equalizeHist(image)
-    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-    return image
+# フォントファイルのパス
+font_path = 'NotoSansCJKjp-Regular.otf'
 
-def get_face_encoding(image):
+# ディレクトリの作成
+if not os.path.exists('known_faces'):
+    os.makedirs('known_faces')
+
+# 既知の顔データのロード
+def load_known_faces():
+    known_face_encodings = []
+    known_face_names = []
+    for filename in os.listdir('known_faces'):
+        if filename.endswith('.jpg') or filename.endswith('.png'):
+            img_path = os.path.join('known_faces', filename)
+            img = face_recognition.load_image_file(img_path)
+            encoding = face_recognition.face_encodings(img)
+            if encoding:
+                known_face_encodings.append(encoding[0])
+                known_face_names.append(os.path.splitext(filename)[0])
+    return known_face_encodings, known_face_names
+
+known_face_encodings, known_face_names = load_known_faces()
+
+# 画像ファイルのアップロード
+st.title("顔認識アプリ")
+st.sidebar.title("メニュー")
+menu = st.sidebar.selectbox("選択してください", ["顔認識", "顔の登録", "ウェブカメラで顔認証"])
+
+def get_font(font_path, size):
     try:
-        image = preprocess_image(image)
-        face_encodings = face_recognition.face_encodings(image)
-        if len(face_encodings) > 0:
-            return face_encodings[0]
-        else:
-            st.warning("Error: No faces found in the image")
-            return None
-    except Exception as e:
-        st.error(f"Exception occurred while processing image: {e}")
-        return None
+        return ImageFont.truetype(font_path, size)
+    except IOError:
+        return ImageFont.load_default()
 
-def main():
-    st.title("顔認識アプリケーション")
+if menu == "顔認識":
+    st.header("アップロードした画像から顔認識")
+    uploaded_file = st.file_uploader("画像をアップロードしてください", type=["jpg", "png"])
 
-    # 既知の顔画像をアップロード
-    known_images = []
-    known_names = []
+    if uploaded_file is not None:
+        image = np.array(Image.open(uploaded_file))
+        face_locations = face_recognition.face_locations(image)
+        face_encodings = face_recognition.face_encodings(image, face_locations)
 
-    uploaded_files = st.file_uploader("既知の顔画像をアップロード", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-    if uploaded_files is not None:
-        for uploaded_file in uploaded_files:
-            bytes_data = uploaded_file.read()
-            image = Image.open(io.BytesIO(bytes_data))
-            st.image(image, caption=f"既知の顔画像: {uploaded_file.name}", use_column_width=True)
-            known_face_encoding = get_face_encoding(np.array(image))
+        pil_image = Image.fromarray(image)
+        draw = ImageDraw.Draw(pil_image)
+        font = get_font(font_path, 24)
 
-            if known_face_encoding is not None:
-                known_images.append(known_face_encoding)
-                known_names.append(st.text_input(f"名前を入力: {uploaded_file.name}", value="Unknown"))
+        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+            name = "Unknown"
 
-    # ウェブカメラで写真を撮影
-    if st.button("ウェブカメラで写真を撮影"):
-        cap = cv2.VideoCapture(0)
-        ret, frame = cap.read()
-        cap.release()
+            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            best_match_index = np.argmin(face_distances)
+            if matches[best_match_index]:
+                name = known_face_names[best_match_index]
 
-        if ret:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            st.image(frame_rgb, caption="ウェブカメラで撮影した画像", use_column_width=True)
+            draw.rectangle(((left, top), (right, bottom)), outline=(0, 0, 255), width=2)
+            draw.text((left, top - 25), name, font=font, fill=(255, 0, 0, 255))
 
-            # 一時的に画像を保存して顔認識
-            image_to_check = frame_rgb
-            image_to_check = preprocess_image(image_to_check)
-            face_locations = face_recognition.face_locations(image_to_check)
-            face_encodings = face_recognition.face_encodings(image_to_check, face_locations)
+        st.image(pil_image, caption='認識結果', use_column_width=True)
 
-            if len(face_locations) == 0 or len(face_encodings) == 0:
-                st.warning("Error: No faces found in the webcam image.")
+elif menu == "顔の登録":
+    st.header("顔の登録")
+    registration_method = st.radio("登録方法を選択してください", ("画像をアップロード", "ウェブカメラで撮影"))
+    name = st.text_input("名前をローマ字で入力してください")
+
+    if registration_method == "画像をアップロード":
+        uploaded_file = st.file_uploader("登録する顔画像をアップロードしてください", type=["jpg", "png"])
+
+        if st.button("登録"):
+            if uploaded_file is not None and name:
+                if re.match("^[a-zA-Z\s]+$", name):
+                    image = np.array(Image.open(uploaded_file))
+                    face_locations = face_recognition.face_locations(image)
+                    if face_locations:
+                        img_path = f'known_faces/{name}.jpg'
+                        Image.fromarray(image).save(img_path)
+                        known_face_encodings, known_face_names = load_known_faces()
+                        st.success(f"{name} を登録しました！")
+                    else:
+                        st.error("顔が検出されませんでした。")
+                else:
+                    st.error("名前はローマ字のみで入力してください。")
             else:
-                for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-                    matches = face_recognition.compare_faces(known_images, face_encoding, tolerance=0.5)
-                    name = "Unknown"
+                st.error("画像と名前を入力してください。")
 
-                    face_distances = face_recognition.face_distance(known_images, face_encoding)
-                    best_match_index = np.argmin(face_distances)
-                    if matches[best_match_index]:
-                        name = known_names[best_match_index]
+    elif registration_method == "ウェブカメラで撮影":
+        if st.button("撮影開始"):
+            cap = cv2.VideoCapture(0)
+            stframe = st.empty()
 
-                    # 結果を表示
-                    st.write(f"Found {name} at ({top}, {right}, {bottom}, {left})")
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    st.error("カメラが検出されませんでした。")
+                    break
 
-                    # 結果を画像に描画
-                    cv2.rectangle(frame_rgb, (left, top), (right, bottom), (0, 0, 255), 2)
-                    cv2.putText(frame_rgb, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+                stframe.image(frame, channels="BGR")
 
-                st.image(frame_rgb, caption="認識結果", use_column_width=True)
+                if st.button("撮影"):
+                    rgb_frame = frame[:, :, ::-1]
+                    face_locations = face_recognition.face_locations(rgb_frame)
+                    if face_locations:
+                        img_path = f'known_faces/{name}.jpg'
+                        Image.fromarray(rgb_frame).save(img_path)
+                        known_face_encodings, known_face_names = load_known_faces()
+                        st.success(f"{name} を登録しました！")
+                        break
+                    else:
+                        st.error("顔が検出されませんでした。")
+                        break
+
+            cap.release()
+
+elif menu == "ウェブカメラで顔認証":
+    st.header("ウェブカメラで顔認証")
+    if st.button("認証開始"):
+        cap = cv2.VideoCapture(0)
+        stframe = st.empty()
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            rgb_frame = frame[:, :, ::-1]
+            face_locations = face_recognition.face_locations(rgb_frame)
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+            pil_frame = Image.fromarray(rgb_frame)
+            draw = ImageDraw.Draw(pil_frame)
+            font = get_font(font_path, 24)
+
+            for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+                matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+                name = "Unknown"
+
+                face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                best_match_index = np.argmin(face_distances)
+                if matches[best_match_index]:
+                    name = known_face_names[best_match_index]
+
+                draw.rectangle(((left, top), (right, bottom)), outline=(0, 0, 255), width=2)
+                draw.text((left, top - 25), name, font=font, fill=(255, 0, 0, 255))
+
+            stframe.image(np.array(pil_frame), channels="RGB")
+
+        cap.release()
+olumn_width=True)
 
 if __name__ == "__main__":
     main()
